@@ -367,7 +367,7 @@ jobs:
                   map(.assets[] | select(.name | contains($BOARD) and endswith(".img.xz"))) |
                   sort_by(.updated_at) |
                   reverse |
-                  .[0] |
+                  .[1] |
                   {data: .updated_at, url: .url, name: .name}')
 
               [[ -z "${latest_version}" || "${latest_version}" == "null" ]] && {
