@@ -229,16 +229,17 @@ init_var() {
     [[ -z "${current_kernel}" ]] && error_msg "Failed to query the current kernel version."
 
     # Adjust the custom kernel repository url format
-    [[ -z "${KERNEL_REPO}" ]] && KERNEL_REPO="ophub/kernel"
+    [[ -z "${KERNEL_REPO}" ]] && KERNEL_REPO="ophub/fnnas"
+    [["${KERNEL_REPO}" =~ ophub/kernel ]] && KERNEL_REPO="ophub/fnnas"
     [[ "${KERNEL_REPO}" =~ ^https: ]] && KERNEL_REPO="$(echo ${KERNEL_REPO} | awk -F'/' '{print $4"/"$5}')"
     kernel_api="https://github.com/${KERNEL_REPO}"
 
     # Set kernel download tags
     [[ -n "${kernel_usage}" ]] && KERNEL_TAGS="${kernel_usage}"
     KERNEL_TAGS="${KERNEL_TAGS//kernel_/}"
-    [[ -z "$(echo ${KERNEL_TAGS} | grep -oE "(stable|flippy|beta|rk3588|rk35xx|h6)")" ]] && {
-        echo -e "${PROMPT} Invalid KERNEL_TAGS value [ ${KERNEL_TAGS} ], reset to default [ stable ]."
-        KERNEL_TAGS="stable"
+    [[ -z "$(echo ${KERNEL_TAGS} | grep -oE "(fnnas)")" ]] && {
+        echo -e "${PROMPT} Invalid KERNEL_TAGS value [ ${KERNEL_TAGS} ], reset to default [ fnnas ]."
+        KERNEL_TAGS="fnnas"
     }
 
     # Check if the mainline u-boot exists
@@ -276,8 +277,8 @@ query_version() {
         # Using local kernel, no need to download from github.com
         kernel_kownload_required="no"
 
-        # Local kernel version comparison
-        local_kernel_version="$(echo ${try_boot} | sed 's/boot-\(.*\)\.tar\.gz/\1/')"
+        # Local kernel version comparison(boot-amlogic-6.12.41-trim.tar.gz -> 6.12.41-trim)
+        local_kernel_version="$(echo ${try_boot} | sed 's/boot-[^-]*-\(.*\)\.tar\.gz/\1/')"
         echo -e "${INFO} Found the kernel in the current directory: [ ${local_kernel_version} ]"
 
         # Use local kernel
@@ -308,10 +309,12 @@ query_version() {
 
         # Query the latest version
         echo -e "${INFO} Query the latest kernel version of the [ ${kernel_verpatch} ] series within [ kernel_${KERNEL_TAGS} ]..."
+        # Get the latest version from github releases(e.g: 6.12.41)
         latest_version="$(
             curl -fsSL \
                 ${kernel_api}/releases/expanded_assets/kernel_${KERNEL_TAGS} |
-                grep -oE "${kernel_verpatch}\.[0-9]+\.tar\.gz" | sed 's/.tar.gz//' |
+                grep -oE "${kernel_verpatch}\.[0-9]+-${PLATFORM}\.tar\.gz" |
+                sed "s/-${PLATFORM}\.tar\.gz//" |
                 sort -urV | head -n 1
         )"
         [[ -n "${latest_version}" ]] || error_msg "Failed to query kernel version from [ ${kernel_api} ]."
@@ -328,14 +331,14 @@ download_kernel() {
     cd ${current_path}
     echo -e "${STEPS} Start downloading kernel package..."
 
-    # Download the kernel from [ releases ]
-    kernel_down_from="https://github.com/${KERNEL_REPO}/releases/download/kernel_${KERNEL_TAGS}/${inputs_kernel}.tar.gz"
+    # Download the kernel from [ releases ], e.g: [ 6.12.41-amlogic.tar.gz ]
+    kernel_down_from="https://github.com/${KERNEL_REPO}/releases/download/kernel_${KERNEL_TAGS}/${inputs_kernel}-${PLATFORM}.tar.gz"
 
     echo -e "${INFO} Download kernel from: [ ${kernel_down_from} ]"
     echo -e "${INFO} Download kernel to:   [ ${kernel_path} ]"
-    curl -fsSL "${kernel_down_from}" -o "${kernel_path}/${inputs_kernel}.tar.gz"
+    curl -fsSL "${kernel_down_from}" -o "${kernel_path}/${inputs_kernel}-${PLATFORM}.tar.gz"
     [[ "${?}" -ne "0" ]] && error_msg "Failed to download kernel."
-    tar -mxzf "${kernel_path}/${inputs_kernel}.tar.gz" -C "${kernel_path}"
+    tar -mxzf "${kernel_path}/${inputs_kernel}-${PLATFORM}.tar.gz" -C "${kernel_path}"
     [[ "${?}" -ne "0" ]] && error_msg "Failed to extract kernel [ ${inputs_kernel} ], stop updating."
     kernel_path="${kernel_path}/${inputs_kernel}"
 
@@ -348,8 +351,9 @@ check_kernel() {
     echo -e "${STEPS} Start checking kernel package..."
 
     # Determine custom kernel filename
-    kernel_boot="$(ls boot-${inputs_kernel}*.tar.gz 2>/dev/null | head -n 1)"
-    kernel_name="${kernel_boot:5:-7}"
+    kernel_boot="$(ls boot-${PLATFORM}-${inputs_kernel}*.tar.gz 2>/dev/null | head -n 1)"
+    kernel_name="${kernel_boot#boot-${PLATFORM}-}"
+    kernel_name="${kernel_name%.tar.gz}"
     echo -e "${INFO} Kernel name: [ ${kernel_name} ]"
 
     # Check if the kernel is already installed
@@ -443,10 +447,10 @@ backup_kernel() {
     [[ "${?}" -ne "0" ]] && error_msg "(1/4) Failed to copy [ /boot/*-${current_kernel_signature} ] files."
     rm -rf dtb*
     chmod +x *
-    tar -czf boot-${current_kernel_signature}.tar.gz *
+    tar -czf boot-${PLATFORM}-${current_kernel_signature}.tar.gz *
     mv -f *.tar.gz ${backup_path}/${current_kernel}
-    [[ "${?}" -ne "0" ]] && error_msg "(1/4) Failed to move [ boot-${current_kernel_signature}.tar.gz ] files."
-    echo -e "${INFO} (1/4) Backup of [ boot-${current_kernel_signature}.tar.gz ] succeeded."
+    [[ "${?}" -ne "0" ]] && error_msg "(1/4) Failed to move [ boot-${PLATFORM}-${current_kernel_signature}.tar.gz ] files."
+    echo -e "${INFO} (1/4) Backup of [ boot-${PLATFORM}-${current_kernel_signature}.tar.gz ] succeeded."
 
     # 2. Pack the dtb-*.tar.gz file
     rm -rf *
@@ -461,20 +465,20 @@ backup_kernel() {
     rm -rf *
     cp -rf /usr/lib/modules/${current_kernel_signature} -t .
     [[ "${?}" -ne "0" ]] && error_msg "(3/4) Failed to copy [ /usr/lib/modules/${current_kernel_signature} ] files."
-    tar -czf modules-${current_kernel_signature}.tar.gz *
+    tar -czf modules-${PLATFORM}-${current_kernel_signature}.tar.gz *
     mv -f *.tar.gz ${backup_path}/${current_kernel}
-    [[ "${?}" -ne "0" ]] && error_msg "(3/4) Failed to move [ modules-${current_kernel_signature}.tar.gz ] files."
-    echo -e "${INFO} (3/4) Backup of [ modules-${current_kernel_signature}.tar.gz ] succeeded."
+    [[ "${?}" -ne "0" ]] && error_msg "(3/4) Failed to move [ modules-${PLATFORM}-${current_kernel_signature}.tar.gz ] files."
+    echo -e "${INFO} (3/4) Backup of [ modules-${PLATFORM}-${current_kernel_signature}.tar.gz ] succeeded."
 
     # 4. Pack the header-*.tar.gz file, header file is optional
     if [[ -d "/usr/src/linux-headers-${current_kernel_signature}" ]]; then
         rm -rf *
         cp -rf /usr/src/linux-headers-${current_kernel_signature}/* -t .
         [[ "${?}" -ne "0" ]] && error_msg "(4/4) Failed to copy [ /usr/src/linux-headers-${current_kernel_signature}/* ] files."
-        tar -czf header-${current_kernel_signature}.tar.gz *
+        tar -czf header-${PLATFORM}-${current_kernel_signature}.tar.gz *
         mv -f *.tar.gz ${backup_path}/${current_kernel}
-        [[ "${?}" -ne "0" ]] && error_msg "(4/4) Failed to move [ header-${current_kernel_signature}.tar.gz ] files."
-        echo -e "${INFO} (4/4) Backup of [ header-${current_kernel_signature}.tar.gz ] succeeded."
+        [[ "${?}" -ne "0" ]] && error_msg "(4/4) Failed to move [ header-${PLATFORM}-${current_kernel_signature}.tar.gz ] files."
+        echo -e "${INFO} (4/4) Backup of [ header-${PLATFORM}-${current_kernel_signature}.tar.gz ] succeeded."
     else
         echo -e "${PROMPT} (4/4) [ /usr/src/linux-headers-${current_kernel_signature} ] folder does not exist, skip backup."
     fi
@@ -498,7 +502,7 @@ update_kernel() {
     rm -rf /boot/uInitrd /boot/Image /boot/zImage /boot/dtb-*
 
     # 01. For /boot five files
-    tar -mxzf boot-${kernel_name}.tar.gz -C /boot
+    tar -mxzf boot-${PLATFORM}-${kernel_name}.tar.gz -C /boot
     [[ "${PLATFORM}" == "amlogic" ]] && (cd /boot && cp -f uInitrd-${kernel_name} uInitrd && cp -f vmlinuz-${kernel_name} zImage)
     [[ "${PLATFORM}" == "rockchip" ]] && (cd /boot && ln -sf uInitrd-${kernel_name} uInitrd && ln -sf vmlinuz-${kernel_name} Image)
     [[ "${PLATFORM}" == "allwinner" ]] && (cd /boot && cp -f uInitrd-${kernel_name} uInitrd && cp -f vmlinuz-${kernel_name} Image)
@@ -515,28 +519,28 @@ update_kernel() {
     echo -e "${INFO} (2/4) Unpacking [ dtb-${PLATFORM}-${kernel_name}.tar.gz ] succeeded."
 
     # 03. For /usr/src/linux-headers-${kernel_name}, header file is optional
-    if [[ -f "header-${kernel_name}.tar.gz" ]]; then
+    if [[ -f "header-${PLATFORM}-${kernel_name}.tar.gz" ]]; then
         header_path="linux-headers-${kernel_name}"
         rm -rf /usr/src/linux-headers-* && mkdir -p "/usr/src/${header_path}"
-        tar -mxzf header-${kernel_name}.tar.gz -C /usr/src/${header_path}
+        tar -mxzf header-${PLATFORM}-${kernel_name}.tar.gz -C /usr/src/${header_path}
         [[ -d "/usr/src/${header_path}/include" ]] || error_msg "/usr/src/${header_path}/include folder is missing."
-        echo -e "${INFO} (3/4) Unpacking [ header-${kernel_name}.tar.gz ] succeeded."
+        echo -e "${INFO} (3/4) Unpacking [ header-${PLATFORM}-${kernel_name}.tar.gz ] succeeded."
     else
-        echo -e "${PROMPT} (3/4) [ header-${kernel_name}.tar.gz ] file does not exist, skip unpacking."
+        echo -e "${PROMPT} (3/4) [ header-${PLATFORM}-${kernel_name}.tar.gz ] file does not exist, skip unpacking."
     fi
 
     # 04. For /usr/lib/modules/${kernel_name}
     rm -rf /usr/lib/modules/*
-    tar -mxzf modules-${kernel_name}.tar.gz -C /usr/lib/modules
+    tar -mxzf modules-${PLATFORM}-${kernel_name}.tar.gz -C /usr/lib/modules
     [[ -n "${header_path}" ]] && (cd /usr/lib/modules/${kernel_name}/ && rm -f build source && ln -sf /usr/src/${header_path} build)
     [[ -d "/usr/lib/modules/${kernel_name}" ]] || error_msg "/usr/lib/modules/${kernel_name} kernel folder is missing."
-    echo -e "${INFO} (4/4) Unpacking [ modules-${kernel_name}.tar.gz ] succeeded."
+    echo -e "${INFO} (4/4) Unpacking [ modules-${PLATFORM}-${kernel_name}.tar.gz ] succeeded."
 
     # Update release file
     sed -i "s|^KERNEL_VERSION=.*|KERNEL_VERSION='${KERNEL_VERSION}'|g" ${ophub_release_file}
 
     # Delete kernel tmpfiles
-    rm -f *${kernel_name}*.tar.gz sha256sums
+    rm -f *${PLATFORM}-${kernel_name}*.tar.gz sha256sums
 
     sync && echo ""
 }
